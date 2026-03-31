@@ -1,5 +1,22 @@
 {
   "version": 2,
+  "functions": {
+    "api/vision.js": {
+      "maxDuration": 30
+    },
+    "api/chat.js": {
+      "maxDuration": 25
+    },
+    "api/trending.js": {
+      "maxDuration": 20
+    },
+    "api/check-price.js": {
+      "maxDuration": 20
+    },
+    "api/search.js": {
+      "maxDuration": 20
+    }
+  },
   "headers": [
     {
       "source": "/api/(.*)",
