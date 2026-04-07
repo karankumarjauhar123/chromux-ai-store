@@ -58,20 +58,21 @@ function injectAffiliateLinks(products) {
 export default async function handler(req, res) {
     // CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
     if (req.method === 'OPTIONS') {
         return res.status(200).end();
     }
     
-    if (req.method !== 'GET') {
+    if (req.method !== 'GET' && req.method !== 'POST') {
         return res.status(405).json({ error: 'Method not allowed' });
     }
 
-    const query = req.query.q;
+    // Support both GET (?q=...) and POST ({ query: "..." }) from Android app
+    const query = req.method === 'GET' ? req.query.q : (req.body?.query || req.body?.q);
     if (!query) {
-        return res.status(400).json({ error: 'Query parameter "q" is required' });
+        return res.status(400).json({ error: 'Query is required. Use ?q= for GET or { "query": "..." } for POST.' });
     }
 
     const cacheKey = 'search:' + query.toLowerCase().trim();
@@ -87,21 +88,31 @@ export default async function handler(req, res) {
         let finalDeals = [];
         if (results && results.length > 0) {
             finalDeals = results.map(r => {
-                const priceMatch = (r.snippet || r.title || '').match(/₹[\d,]+/);
-                
-                let platform = 'Store';
-                if (r.url.includes('flipkart')) platform = 'Flipkart';
-                if (r.url.includes('amazon')) platform = 'Amazon';
-                if (r.url.includes('myntra')) platform = 'Myntra';
-                if (r.url.includes('meesho')) platform = 'Meesho';
+                // PRESERVE rich data from the scraper (images, price, rating, platform)
+                // Only use fallbacks if scraper didn't provide the field
+                let platform = r.platform || 'Store';
+                if (!r.platform) {
+                    if (r.url.includes('flipkart')) platform = 'Flipkart';
+                    else if (r.url.includes('amazon')) platform = 'Amazon';
+                    else if (r.url.includes('myntra')) platform = 'Myntra';
+                    else if (r.url.includes('meesho')) platform = 'Meesho';
+                }
+
+                // Use scraper's price first; only regex-parse from snippet as fallback
+                let price = r.price || '';
+                if (!price) {
+                    const priceMatch = (r.snippet || r.title || '').match(/₹[\d,]+/);
+                    price = priceMatch ? priceMatch[0] : 'Check Price';
+                }
 
                 return {
                     title: r.title || 'Product',
-                    price: priceMatch ? priceMatch[0] : 'Check Price',
+                    price: price,
                     url: r.url || '',
                     platform: platform,
-                    rating: '4.0', // Fallback rating
-                    imageUrl: '' // Scraper doesn't pull image initially
+                    rating: r.rating || '4.0',
+                    imageUrl: r.imageUrl || '',
+                    description: r.description || r.snippet || ''
                 };
             });
             

@@ -22,8 +22,8 @@ Goal: Help the user find the best products across ALL categories — electronics
 CRITICAL RULES:
 1. When products are provided in the context, USE THOSE ACTUAL URLs. Do NOT make up fake URLs.
 2. If the context has Amazon/Flipkart links, USE THEM EXACTLY as given.
-3. If no real product links are available, create a search URL like: https://www.amazon.in/s?k=product+name or https://www.flipkart.com/search?q=product+name
-4. NEVER hallucinate product URLs. Use real ones from context or search URLs.
+3. If no real product links are available, you MUST output exactly "SEARCH" for the url field. Do NOT use placeholders like "https://amazon.in/...".
+4. NEVER hallucinate product URLs. Use real ones from context or "SEARCH".
 5. For each product, try to include an "imageUrl" field with a real product image URL from Amazon or the respective store. If you don't have one, leave it as empty string "".
 
 Format your response EXACTLY as valid JSON:
@@ -31,9 +31,9 @@ Format your response EXACTLY as valid JSON:
   "message": "Arre bhai! Tera budget sorted hai. Yeh dekho top suggestions 🔥",
   "products": [
     {
-      "title": "Product Title",
+      "title": "Exact Product Title for Search",
       "price": "₹XX,XXX",
-      "url": "https://amazon.in/...",
+      "url": "SEARCH",
       "platform": "Amazon",
       "rating": "4.5",
       "imageUrl": "https://m.media-amazon.com/images/I/xxxxx.jpg",
@@ -104,7 +104,13 @@ function injectAffiliateLinks(products) {
  * Temporarily outputs clean direct search links without affiliate tracking.
  */
 function generateSearchFallback(product) {
-    if (!product.url || product.url.length < 10 || product.url.includes('example.com')) {
+    if (!product.url || 
+        product.url.length < 15 || 
+        product.url.includes('example.com') || 
+        product.url.includes('...') || 
+        product.url.includes('…') || 
+        product.url === 'SEARCH') {
+        
         const searchQuery = encodeURIComponent(product.title);
         if (product.platform?.toLowerCase() === 'flipkart') {
             product.url = `https://www.flipkart.com/search?q=${searchQuery}`;
@@ -114,7 +120,7 @@ function generateSearchFallback(product) {
             product.url = `https://www.meesho.com/search?q=${searchQuery}`;
         } else {
             // Default to Amazon (RE-ENABLED Affiliate Tracking)
-            product.url = `https://www.amazon.in/s?k=${searchQuery}&${AFFILIATE_CONFIG.amazon.param}=${AFFILIATE_CONFIG.amazon.tag}`;
+            product.url = `https://www.amazon.in/s?k=${searchQuery}`;
         }
     }
     return product;
@@ -192,24 +198,22 @@ export default async function handler(req, res) {
             }
             
             if (fetchedProducts.length > 0) {
-                // Map raw scraper results to full UI Product Cards
+                // Map raw scraper results to full UI Product Cards — preserve scraper's rich data
                 let finalDeals = fetchedProducts.map(r => {
-                    const priceMatch = (r.snippet || r.title || '').match(/₹[\d,]+/);
-                    
-                    let platform = 'Store';
-                    if (r.url.includes('flipkart')) platform = 'Flipkart';
-                    if (r.url.includes('amazon')) platform = 'Amazon';
-                    if (r.url.includes('myntra')) platform = 'Myntra';
-                    if (r.url.includes('meesho')) platform = 'Meesho';
+                    let price = r.price || '';
+                    if (!price) {
+                        const priceMatch = (r.snippet || r.title || '').match(/₹[\d,]+/);
+                        price = priceMatch ? priceMatch[0] : 'Check Price';
+                    }
 
                     return {
                         title: r.title || 'Top Searched Item',
-                        price: priceMatch ? priceMatch[0] : 'Check Price',
+                        price: price,
                         url: r.url || '',
-                        platform: platform,
-                        rating: '4.5',
-                        imageUrl: '',
-                        description: 'Found directly via our smart search engine.',
+                        platform: r.platform || 'Store',
+                        rating: r.rating || '4.5',
+                        imageUrl: r.imageUrl || '',
+                        description: r.description || 'Found directly via our smart search engine.',
                         pros: ['⭐ Bestseller / Top Reviewed', '🔥 Highly Searched'],
                         cons: []
                     };
@@ -304,18 +308,19 @@ export default async function handler(req, res) {
             const emergencyResults = await fetchGoogleShopping(query);
             if (emergencyResults && emergencyResults.length > 0) {
                 let emergencyDeals = emergencyResults.map(r => {
-                    const priceMatch = (r.snippet || r.title || '').match(/₹[\d,]+/);
-                    let platform = 'Store';
-                    if (r.url.includes('flipkart')) platform = 'Flipkart';
-                    if (r.url.includes('amazon')) platform = 'Amazon';
-                    if (r.url.includes('myntra')) platform = 'Myntra';
-                    if (r.url.includes('meesho')) platform = 'Meesho';
+                    let price = r.price || '';
+                    if (!price) {
+                        const priceMatch = (r.snippet || r.title || '').match(/₹[\d,]+/);
+                        price = priceMatch ? priceMatch[0] : 'Check Price';
+                    }
                     return {
                         title: r.title || 'Product',
-                        price: priceMatch ? priceMatch[0] : 'Check Price',
+                        price: price,
                         url: r.url || '',
-                        platform, rating: '4.0', imageUrl: '',
-                        description: 'Found via emergency search.',
+                        platform: r.platform || 'Store',
+                        rating: r.rating || '4.0',
+                        imageUrl: r.imageUrl || '',
+                        description: r.description || 'Found via emergency search.',
                         pros: ['⭐ Top Result'], cons: []
                     };
                 });
