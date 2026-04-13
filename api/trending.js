@@ -1,79 +1,84 @@
-import { fetchGoogleShopping } from '../lib/scraper.js';
+import { fetchGoogleShoppingGrouped } from '../lib/scraper.js';
 import { cacheService } from '../lib/cache.js';
 
+const TRENDING_QUERIES = [
+    "best true wireless earbuds",
+    "smartwatches under 2000",
+    "trending mens shoes",
+    "stylish kurtis for women",
+    "home decor items",
+    "power banks 20000mah"
+];
 
+const AFFILIATE_CONFIG = {
+    amazon: { tag: 'chromuxaistor-21', param: 'tag' }
+};
+
+function injectAffiliateLinks(products) {
+    if (!products) return [];
+    return products.map(p => {
+        try {
+            if (p.url.includes('amazon')) {
+                const urlObj = new URL(p.url);
+                urlObj.searchParams.set(AFFILIATE_CONFIG.amazon.param, AFFILIATE_CONFIG.amazon.tag);
+                p.url = urlObj.toString();
+            }
+        } catch(e) {}
+        return p;
+    });
+}
 
 export default async function handler(req, res) {
-    // CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-    if (req.method === 'OPTIONS') {
-        return res.status(200).end();
-    }
-    
-    if (req.method !== 'GET') {
-        return res.status(405).json({ error: 'Method not allowed' });
-    }
+    if (req.method === 'OPTIONS') return res.status(200).end();
+    if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
-    // Check Cache
-    const cachedTrending = cacheService.get('trending_deals');
-    if (cachedTrending) {
-        return res.status(200).json(cachedTrending);
-    }
+    const cacheKey = 'trending_feed_v2';
+    const cachedTrending = cacheService.get(cacheKey);
+    if (cachedTrending) return res.status(200).json(cachedTrending);
 
     try {
-        console.log(`[Trending API] Cache expired/empty. Fetching fresh trending deals...`);
+        console.log(`[Trending API] Cache empty. Fetching fresh Netflix-style feed...`);
         
-        const trendingKeywords = [
-            "best selling electronics today",
-            "trending fashion clothing",
-            "home decor deals"
-        ];
+        // Pick 1 random query to avoid Vercel timeout (each call does 4 parallel platform scrapes internally)
+        const randomQuery = TRENDING_QUERIES[Math.floor(Math.random() * TRENDING_QUERIES.length)];
         
-        const allDeals = [];
-        for (const kw of trendingKeywords) {
-            try {
-                const results = await fetchGoogleShopping(kw);
-                // Scraper returns {title, url, snippet}. Map to Product-compatible format.
-                if (results && results.length > 0) {
-                    const mapped = results.slice(0, 2).map(r => {
-                        // Try to extract price from snippet or title
-                        const priceMatch = (r.snippet || r.title || '').match(/₹[\d,]+/);
-                        return {
-                            title: r.title || 'Hot Deal',
-                            price: priceMatch ? priceMatch[0] : 'Check Price',
-                            url: r.url || '',
-                            platform: r.url?.includes('flipkart') ? 'Flipkart' : r.url?.includes('myntra') ? 'Myntra' : r.url?.includes('meesho') ? 'Meesho' : 'Amazon',
-                            rating: '4.0',
-                            imageUrl: '' // DuckDuckGo Lite doesn't return images
-                        };
-                    });
-                    allDeals.push(...mapped);
-                }
-            } catch (e) {
-                console.error(`[Trending API] Failed scraping ${kw}:`, e.message);
-            }
-        }
-        
-        // Shuffle for freshness
-        const finalDeals = allDeals.sort(() => Math.random() - 0.5).slice(0, 6);
-        
-        const responseData = {
-            success: true,
-            deals: finalDeals
-        };
+        const results = await fetchGoogleShoppingGrouped(randomQuery);
 
-        // Cache only if we got results
-        if (finalDeals.length > 0) {
-            cacheService.set('trending_deals', responseData, 3600000); // 1 hour TTL
+        const shuffle = (arr) => [...(arr||[])].sort(() => 0.5 - Math.random());
+
+        const finalAmazon = injectAffiliateLinks(shuffle(results.amazon)).slice(0, 20);
+        const finalFlipkart = shuffle(results.flipkart).slice(0, 20);
+        const finalMyntra = shuffle(results.myntra).slice(0, 20);
+        const finalMeesho = shuffle(results.meesho).slice(0, 20);
+
+        const feeds = [];
+        
+        if (finalAmazon.length > 0) {
+            feeds.push({ title: "Popular Deals on Amazon", platform: "Amazon", emoji: "🟠", products: finalAmazon });
+        }
+        if (finalFlipkart.length > 0) {
+            feeds.push({ title: "Trending on Flipkart", platform: "Flipkart", emoji: "🔵", products: finalFlipkart });
+        }
+        if (finalMyntra.length > 0) {
+            feeds.push({ title: "Fashion from Myntra", platform: "Myntra", emoji: "🩷", products: finalMyntra });
+        }
+        if (finalMeesho.length > 0) {
+            feeds.push({ title: "Budget Steals on Meesho", platform: "Meesho", emoji: "🟣", products: finalMeesho });
+        }
+
+        const responseData = { success: true, feeds: feeds };
+
+        if (feeds.length > 0) {
+            cacheService.set(cacheKey, responseData, 3600000); // 1 hr TTL
         }
 
         return res.status(200).json(responseData);
-
     } catch (e) {
-        console.error("[Trending API] Major Error:", e);
+        console.error("[Trending API] Error:", e);
         return res.status(500).json({ success: false, error: e.message });
     }
 }
