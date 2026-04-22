@@ -7,7 +7,10 @@ const TRENDING_QUERIES = [
     "trending mens shoes",
     "stylish kurtis for women",
     "home decor items",
-    "power banks 20000mah"
+    "power banks 20000mah",
+    "gaming headphones",
+    "backpacks for men",
+    "sunglasses for men women"
 ];
 
 const AFFILIATE_CONFIG = {
@@ -36,24 +39,47 @@ export default async function handler(req, res) {
     if (req.method === 'OPTIONS') return res.status(200).end();
     if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
-    const cacheKey = 'trending_feed_v2';
+    const cacheKey = 'trending_feed_v3';
     const cachedTrending = cacheService.get(cacheKey);
     if (cachedTrending) return res.status(200).json(cachedTrending);
 
     try {
         console.log(`[Trending API] Cache empty. Fetching fresh Netflix-style feed...`);
         
-        // Pick 1 random query to avoid Vercel timeout (each call does 4 parallel platform scrapes internally)
-        const randomQuery = TRENDING_QUERIES[Math.floor(Math.random() * TRENDING_QUERIES.length)];
+        // Pick 2 random queries and merge results for variety
+        const shuffled = [...TRENDING_QUERIES].sort(() => 0.5 - Math.random());
+        const query1 = shuffled[0];
+        const query2 = shuffled[1];
         
-        const results = await fetchGoogleShoppingGrouped(randomQuery);
+        console.log(`[Trending API] Using queries: "${query1}" + "${query2}"`);
+        
+        // Fetch both in parallel
+        const [results1, results2] = await Promise.allSettled([
+            fetchGoogleShoppingGrouped(query1),
+            fetchGoogleShoppingGrouped(query2)
+        ]);
 
-        const shuffle = (arr) => [...(arr||[])].sort(() => 0.5 - Math.random());
+        const r1 = results1.status === 'fulfilled' ? results1.value : { amazon: [], flipkart: [], myntra: [], meesho: [] };
+        const r2 = results2.status === 'fulfilled' ? results2.value : { amazon: [], flipkart: [], myntra: [], meesho: [] };
 
-        const finalAmazon = injectAffiliateLinks(shuffle(results.amazon)).slice(0, 20);
-        const finalFlipkart = shuffle(results.flipkart).slice(0, 20);
-        const finalMyntra = shuffle(results.myntra).slice(0, 20);
-        const finalMeesho = shuffle(results.meesho).slice(0, 20);
+        // Merge results from both queries
+        const mergeAndShuffle = (a, b) => {
+            const merged = [...(a||[]), ...(b||[])];
+            // Deduplicate by URL
+            const seen = new Set();
+            const unique = merged.filter(item => {
+                const key = item.url?.split('?')[0] || item.title;
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+            return unique.sort(() => 0.5 - Math.random());
+        };
+
+        const finalAmazon = injectAffiliateLinks(mergeAndShuffle(r1.amazon, r2.amazon)).slice(0, 25);
+        const finalFlipkart = mergeAndShuffle(r1.flipkart, r2.flipkart).slice(0, 25);
+        const finalMyntra = mergeAndShuffle(r1.myntra, r2.myntra).slice(0, 20);
+        const finalMeesho = mergeAndShuffle(r1.meesho, r2.meesho).slice(0, 20);
 
         const feeds = [];
         
@@ -70,11 +96,33 @@ export default async function handler(req, res) {
             feeds.push({ title: "Budget Steals on Meesho", platform: "Meesho", emoji: "🟣", products: finalMeesho });
         }
 
+        // If all direct scrapers failed, create a "Hot Searches" feed from DDG as ultimate fallback
+        if (feeds.length === 0) {
+            console.log(`[Trending API] All scrapers empty, generating suggestion feed...`);
+            feeds.push({
+                title: "Try Searching",
+                platform: "Suggestion",
+                emoji: "🔍",
+                products: TRENDING_QUERIES.slice(0, 6).map(q => ({
+                    title: q.charAt(0).toUpperCase() + q.slice(1),
+                    price: "Search Now",
+                    url: `https://www.google.com/search?q=${encodeURIComponent(q)}&tbm=shop`,
+                    imageUrl: '',
+                    platform: 'Suggestion',
+                    rating: '4.0',
+                    ratingNumeric: 4.0,
+                    priceNumeric: 0,
+                    discount: '',
+                    isSuggestion: true
+                }))
+            });
+        }
+
         const responseData = { success: true, feeds: feeds };
 
-        if (feeds.length > 0) {
-            cacheService.set(cacheKey, responseData, 3600000); // 1 hr TTL
-        }
+        // Cache for 30 min if we got results, 5 min if empty (to retry sooner)
+        const ttl = feeds.length > 0 && feeds[0].platform !== 'Suggestion' ? 1800000 : 300000;
+        cacheService.set(cacheKey, responseData, ttl);
 
         return res.status(200).json(responseData);
     } catch (e) {
