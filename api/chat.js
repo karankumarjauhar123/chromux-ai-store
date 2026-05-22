@@ -1,19 +1,8 @@
 import { askMegaRouter } from '../lib/megaRouter.js';
 import { fetchGoogleShopping } from '../lib/scraper.js';
 import { cacheService } from '../lib/cache.js';
-
-// ============================================================
-// AFFILIATE CONFIG — Change these to YOUR real affiliate IDs!
-// ============================================================
-const AFFILIATE_CONFIG = {
-    amazon: {
-        // Amazon Associates Tag — Sign up at: https://affiliate-program.amazon.in/
-        tag: 'chromuxaistor-21',
-        // Parameter name used by Amazon
-        param: 'tag'
-    }
-    // Others platforms (Flipkart, Myntra, Meesho) are currently DIRECT links only.
-};
+import { injectAffiliateLinks, injectAffiliateLinksSync } from '../lib/cuelinks.js';
+import { checkRateLimit } from '../lib/rateLimiter.js';
 
 const SYSTEM_PROMPT = `You are "Chromux AI Store", a funny, hyper-intelligent, bilingual (Hindi/English) personal shopping assistant built for modern Gen-Z and Millennial Indians.
 Your personality: Casual, enthusiastic, uses words like "bro", "bhai", "yaar", "🔥", "sahi bata raha hu".
@@ -49,84 +38,6 @@ If no products are in context, or the user is just saying "Hi", keep 'products' 
 
 
 // ============================================================
-// AFFILIATE ENGINE — Injects tracking tags into ALL product URLs
-// This is how you EARN MONEY from every product recommendation! 💰
-// ============================================================
-function injectAffiliateLinks(products) {
-    if (!products || !Array.isArray(products)) return [];
-
-    return products.map(p => {
-        if (!p.url || typeof p.url !== 'string') return p;
-
-        try {
-            const urlObj = new URL(p.url);
-
-            // Clean any existing tracking junk to keep URLs pure
-            urlObj.searchParams.delete('tag');
-            urlObj.searchParams.delete('ref');
-            urlObj.searchParams.delete('linkCode');
-            urlObj.searchParams.delete('affid');
-            urlObj.searchParams.delete('affExtParam1');
-
-            if (urlObj.hostname.includes('amazon')) {
-                // RE-ENABLED: Insert Amazon Affiliate Tag!
-                urlObj.searchParams.set(AFFILIATE_CONFIG.amazon.param, AFFILIATE_CONFIG.amazon.tag);
-                p.platform = p.platform || 'Amazon';
-            } else if (urlObj.hostname.includes('flipkart')) {
-                p.platform = p.platform || 'Flipkart';
-            } else if (urlObj.hostname.includes('myntra')) {
-                p.platform = p.platform || 'Myntra';
-            } else if (urlObj.hostname.includes('meesho')) {
-                p.platform = p.platform || 'Meesho';
-            } else {
-                p.platform = p.platform || 'Store';
-            }
-
-            p.url = urlObj.toString();
-        } catch (e) {
-            // If URL parsing fails, try basic string append dynamically for Amazon
-            if (p.url.includes('amazon.in') || p.url.includes('amazon.com')) {
-                p.url = p.url.includes('?') 
-                    ? `${p.url}&${AFFILIATE_CONFIG.amazon.param}=${AFFILIATE_CONFIG.amazon.tag}`
-                    : `${p.url}?${AFFILIATE_CONFIG.amazon.param}=${AFFILIATE_CONFIG.amazon.tag}`;
-                p.platform = p.platform || 'Amazon';
-            } else {
-                console.log("Failed to clean url:", p.url);
-            }
-        }
-
-        return p;
-    });
-}
-
-/**
- * Generate clean search fallback URLs when AI doesn't have real product links
- * Temporarily outputs clean direct search links without affiliate tracking.
- */
-function generateSearchFallback(product) {
-    if (!product.url || 
-        product.url.length < 15 || 
-        product.url.includes('example.com') || 
-        product.url.includes('...') || 
-        product.url.includes('…') || 
-        product.url === 'SEARCH') {
-        
-        const searchQuery = encodeURIComponent(product.title);
-        if (product.platform?.toLowerCase() === 'flipkart') {
-            product.url = `https://www.flipkart.com/search?q=${searchQuery}`;
-        } else if (product.platform?.toLowerCase() === 'myntra') {
-            product.url = `https://www.myntra.com/${searchQuery}`;
-        } else if (product.platform?.toLowerCase() === 'meesho') {
-            product.url = `https://www.meesho.com/search?q=${searchQuery}`;
-        } else {
-            // Default to Amazon (RE-ENABLED Affiliate Tracking)
-            product.url = `https://www.amazon.in/s?k=${searchQuery}`;
-        }
-    }
-    return product;
-}
-
-// ============================================================
 // MAIN API HANDLER
 // ============================================================
 export default async function handler(req, res) {
@@ -141,6 +52,12 @@ export default async function handler(req, res) {
         return;
     }
 
+    const { allowed } = checkRateLimit(req, 20, 60000);
+    if (!allowed) {
+        res.setHeader('Retry-After', 60);
+        return res.status(429).json({ error: 'Too many requests. Please wait a moment.' });
+    }
+
     if (req.method !== 'POST') {
         return res.status(405).json({ error: 'Method Not Allowed' });
     }
@@ -152,10 +69,12 @@ export default async function handler(req, res) {
     }
 
     // Check cache to save API keys
-    const cacheKey = typeof query === 'string' ? 'chat:' + query.toLowerCase().trim() : '';
-    const cachedResponse = cacheService.get(cacheKey);
-    if (cachedResponse) {
-        return res.status(200).json(cachedResponse);
+    const cacheKey = (typeof query === 'string' && query.trim() !== '') ? 'chat:' + query.toLowerCase().trim() : null;
+    if (cacheKey) {
+        const cachedResponse = cacheService.get(cacheKey);
+        if (cachedResponse) {
+            return res.status(200).json(cachedResponse);
+        }
     }
 
     try {
@@ -219,7 +138,7 @@ export default async function handler(req, res) {
                     };
                 });
                 
-                finalDeals = injectAffiliateLinks(finalDeals);
+                finalDeals = await injectAffiliateLinks(finalDeals);
                 
                 const fallbackOutput = {
                     message: "Arre bhai! AI thoda busy hai, par maine Internet ki sabse best deals tumhare liye seedhe nikaal li hain! Yeh lo Top Reviewed items 🔥",
@@ -232,11 +151,11 @@ export default async function handler(req, res) {
             } else {
                 // Even scraping failed — return a friendly message with search links
                 const searchQuery = encodeURIComponent(query);
-                const emergencyProducts = [
+                let emergencyProducts = [
                     {
                         title: `Search "${query}" on Amazon`,
                         price: 'Check Price',
-                        url: `https://www.amazon.in/s?k=${searchQuery}&tag=${AFFILIATE_CONFIG.amazon.tag}`,
+                        url: `https://www.amazon.in/s?k=${searchQuery}`,
                         platform: 'Amazon',
                         rating: '4.5',
                         imageUrl: '',
@@ -256,6 +175,7 @@ export default async function handler(req, res) {
                         cons: []
                     }
                 ];
+                emergencyProducts = await injectAffiliateLinks(emergencyProducts);
                 const emergencyOutput = {
                     message: "Bhai, abhi AI aur scraper dono busy hain! Par tension mat le — yeh direct search links use kar 👇",
                     products: emergencyProducts,
@@ -271,15 +191,11 @@ export default async function handler(req, res) {
             const cleanJson = aiResult.response.replace(/```json|```/g, '').trim();
             finalOutput = JSON.parse(cleanJson);
             
-            // Step 5: AFFILIATE ENGINE 💰
-            // This is the MONEY-MAKING step!
+            // Step 5: CUELINKS AFFILIATE ENGINE 💰
+            // This is the MONEY-MAKING step! ALL platforms earn commission now!
             if (finalOutput.products && Array.isArray(finalOutput.products)) {
-                // First: Fix any fake/missing URLs with search fallbacks
-                finalOutput.products = finalOutput.products.map(generateSearchFallback);
-                // Then: Inject affiliate tags into ALL URLs
-                finalOutput.products = injectAffiliateLinks(finalOutput.products);
-                
-                console.log(`[Affiliate] Injected tags into ${finalOutput.products.length} products`);
+                finalOutput.products = await injectAffiliateLinks(finalOutput.products);
+                console.log(`[Cuelinks] 💰 Injected affiliate tags into ${finalOutput.products.length} products`);
             }
             
             finalOutput.provider_used = aiResult.provider;
@@ -324,7 +240,8 @@ export default async function handler(req, res) {
                         pros: ['⭐ Top Result'], cons: []
                     };
                 });
-                emergencyDeals = injectAffiliateLinks(emergencyDeals);
+                // Use sync version in catch block to avoid nested async issues
+                emergencyDeals = injectAffiliateLinksSync(emergencyDeals);
                 return res.status(200).json({
                     message: "Server error hua tha, par yeh lo kuch results mil gaye! 🔥",
                     products: emergencyDeals,

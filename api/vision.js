@@ -1,6 +1,8 @@
 import { fetchGoogleShopping } from '../lib/scraper.js';
+import { injectAffiliateLinks } from '../lib/cuelinks.js';
 import fs from 'fs';
 import path from 'path';
+import { checkRateLimit } from '../lib/rateLimiter.js';
 
 // Load Gemini Key from environment or local keys.json
 let keys = { GEMINI_KEYS: [] };
@@ -47,6 +49,12 @@ export default async function handler(req, res) {
 
     if (req.method === 'OPTIONS') {
         return res.status(200).end();
+    }
+
+    const { allowed } = checkRateLimit(req, 10, 60000);
+    if (!allowed) {
+        res.setHeader('Retry-After', 60);
+        return res.status(429).json({ error: 'Too many requests. Please wait a moment.' });
     }
 
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
@@ -140,6 +148,9 @@ export default async function handler(req, res) {
             
             await Promise.allSettled(scrapeTasks);
             parsedJson.products = results.filter(r => r !== null);
+
+            // Inject Cuelinks affiliate tags to ALL product URLs 💰
+            parsedJson.products = await injectAffiliateLinks(parsedJson.products);
         }
 
         res.status(200).json(parsedJson);

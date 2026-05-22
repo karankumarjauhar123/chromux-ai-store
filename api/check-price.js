@@ -30,6 +30,14 @@ export default async function handler(req, res) {
             // The scraper returns {title, url, snippet} — no price field directly.
             // Try to extract price from snippet text first (fast path)
             for (const r of results) {
+                // Direct price field from scraper (post April 2026 rewrite)
+                if (r.price && r.price.includes('₹')) {
+                    return res.status(200).json({
+                        success: true,
+                        price: r.price
+                    });
+                }
+                
                 const priceMatch = (r.snippet || '').match(/₹[\d,]+/);
                 if (priceMatch) {
                     return res.status(200).json({

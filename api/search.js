@@ -1,37 +1,7 @@
 import { fetchGoogleShoppingGrouped } from '../lib/scraper.js';
 import { cacheService } from '../lib/cache.js';
-
-const AFFILIATE_CONFIG = {
-    amazon: { tag: 'chromuxaistor-21', param: 'tag' }
-};
-
-function injectAffiliateLinks(products) {
-    if (!products || !Array.isArray(products)) return [];
-    return products.map(p => {
-        if (!p.url || typeof p.url !== 'string') return p;
-        try {
-            const urlObj = new URL(p.url);
-            urlObj.searchParams.delete('tag');
-            urlObj.searchParams.delete('ref');
-            urlObj.searchParams.delete('linkCode');
-            urlObj.searchParams.delete('affid');
-
-            if (urlObj.hostname.includes('amazon')) {
-                urlObj.searchParams.set(AFFILIATE_CONFIG.amazon.param, AFFILIATE_CONFIG.amazon.tag);
-                p.platform = 'Amazon';
-            }
-            p.url = urlObj.toString();
-        } catch (e) {
-            // Backup
-            if (p.url.includes('amazon.in')) {
-                p.url = p.url.includes('?') 
-                    ? `${p.url}&${AFFILIATE_CONFIG.amazon.param}=${AFFILIATE_CONFIG.amazon.tag}`
-                    : `${p.url}?${AFFILIATE_CONFIG.amazon.param}=${AFFILIATE_CONFIG.amazon.tag}`;
-            }
-        }
-        return p;
-    });
-}
+import { injectAffiliateLinks } from '../lib/cuelinks.js';
+import { checkRateLimit } from '../lib/rateLimiter.js';
 
 export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -39,6 +9,13 @@ export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
     if (req.method === 'OPTIONS') return res.status(200).end();
+
+    const { allowed } = checkRateLimit(req, 30, 60000);
+    if (!allowed) {
+        res.setHeader('Retry-After', 60);
+        return res.status(429).json({ error: 'Too many requests. Please wait a moment.' });
+    }
+
     if (req.method !== 'GET' && req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
     const query = req.method === 'GET' ? req.query.q : (req.body?.query || req.body?.q);
@@ -52,14 +29,20 @@ export default async function handler(req, res) {
         console.log(`[Search API] Fetching deep grouped results for: ${query}`);
         const scrapedGroups = await fetchGoogleShoppingGrouped(query);
         
-        // Inject affiliate tags to Amazon
-        scrapedGroups.amazon = injectAffiliateLinks(scrapedGroups.amazon);
+        // Inject Cuelinks affiliate tags to ALL platforms 💰
+        const [affAmazon, affFlipkart, affMyntra, affMeesho] = await Promise.all([
+            injectAffiliateLinks(scrapedGroups.amazon),
+            injectAffiliateLinks(scrapedGroups.flipkart),
+            injectAffiliateLinks(scrapedGroups.myntra),
+            injectAffiliateLinks(scrapedGroups.meesho)
+        ]);
+
         
         let allProducts = [
-            ...scrapedGroups.amazon,
-            ...scrapedGroups.flipkart,
-            ...scrapedGroups.myntra,
-            ...scrapedGroups.meesho
+            ...affAmazon,
+            ...affFlipkart,
+            ...affMyntra,
+            ...affMeesho
         ];
 
         const responseData = {
@@ -67,10 +50,10 @@ export default async function handler(req, res) {
             query: query,
             allProducts: allProducts,
             grouped: {
-                Amazon: scrapedGroups.amazon,
-                Flipkart: scrapedGroups.flipkart,
-                Myntra: scrapedGroups.myntra,
-                Meesho: scrapedGroups.meesho
+                Amazon: affAmazon,
+                Flipkart: affFlipkart,
+                Myntra: affMyntra,
+                Meesho: affMeesho
             }
         };
 
