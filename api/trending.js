@@ -43,6 +43,58 @@ export default async function handler(req, res) {
     if (req.method === 'OPTIONS') return res.status(200).end();
     if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
 
+    // Pagination support: page=1 (carousels), page=2+ (grid products for infinite scroll)
+    const page = parseInt(req.query?.page || '1', 10);
+    const pageSize = parseInt(req.query?.page_size || '20', 10);
+
+    // ============================================================
+    // PAGE 2+: Return flat grid products for infinite scroll
+    // ============================================================
+    if (page >= 2) {
+        const gridCacheKey = `trending_grid_page_${page}`;
+        const cachedGrid = cacheService.get(gridCacheKey);
+        if (cachedGrid) return res.status(200).json(cachedGrid);
+
+        try {
+            // Pick 1 random category per page (lightweight — avoids scraper overload)
+            const catIndex = (page - 2) % CATEGORY_FEEDS.length;
+            const shuffled = [...CATEGORY_FEEDS].sort(() => 0.5 - Math.random());
+            const cat = shuffled[catIndex] || shuffled[0];
+
+            console.log(`[Trending API] Page ${page}: Fetching grid products for "${cat.title}"`);
+
+            const result = await fetchGoogleShoppingGrouped(cat.query);
+            let gridProducts = deduplicate([
+                ...(result.amazon || []),
+                ...(result.flipkart || []),
+                ...(result.myntra || []),
+                ...(result.meesho || [])
+            ]).sort(() => 0.5 - Math.random()).slice(0, pageSize);
+
+            gridProducts = await injectAffiliateLinks(gridProducts);
+
+            const hasMore = gridProducts.length >= 5; // If we got decent results, likely more available
+            const gridResponse = {
+                success: true,
+                gridProducts: gridProducts,
+                hasMore: hasMore && page < 10, // Cap at 10 pages max
+                nextPage: page + 1,
+                category: cat.title
+            };
+
+            // Cache grid pages for 20 minutes
+            cacheService.set(gridCacheKey, gridResponse, 1200000);
+            console.log(`[Trending API] Page ${page}: ✅ ${gridProducts.length} grid products`);
+            return res.status(200).json(gridResponse);
+        } catch (e) {
+            console.error(`[Trending API] Page ${page} error:`, e.message);
+            return res.status(200).json({ success: true, gridProducts: [], hasMore: false, nextPage: page + 1 });
+        }
+    }
+
+    // ============================================================
+    // PAGE 1: Return carousels (existing behavior — no breaking change)
+    // ============================================================
     const cacheKey = 'trending_feed_v4';
     const cachedTrending = cacheService.get(cacheKey);
     if (cachedTrending) return res.status(200).json(cachedTrending);

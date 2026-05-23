@@ -14,6 +14,8 @@ CRITICAL RULES:
 3. If no real product links are available, you MUST output exactly "SEARCH" for the url field. Do NOT use placeholders like "https://amazon.in/...".
 4. NEVER hallucinate product URLs. Use real ones from context or "SEARCH".
 5. For each product, try to include an "imageUrl" field with a real product image URL from Amazon or the respective store. If you don't have one, leave it as empty string "".
+6. IMPORTANT: You MUST recommend products from MULTIPLE e-commerce platforms — Amazon, Flipkart, Myntra, Meesho, and Ajio. Spread your recommendations across at least 2-3 different platforms. For example, if recommending 6 products, give 2 from Amazon, 2 from Flipkart, 1 from Myntra, 1 from Meesho. The "platform" field must be EXACTLY one of: "Amazon", "Flipkart", "Myntra", "Meesho", or "Ajio".
+7. Recommend at least 5-8 products total, spread across multiple platforms.
 
 Format your response EXACTLY as valid JSON:
 {
@@ -28,7 +30,20 @@ Format your response EXACTLY as valid JSON:
       "imageUrl": "https://m.media-amazon.com/images/I/xxxxx.jpg",
       "description": "Short snappy 1-line reason why this product is good.",
       "pros": ["Great battery life", "Premium display"],
-      "cons": ["No charger in box"]
+      "cons": ["No charger in box"],
+      "brand": "Brand Name (e.g., Realme, JBL, boAt, Nike)"
+    },
+    {
+      "title": "Another Product from Flipkart",
+      "price": "₹YY,YYY",
+      "url": "SEARCH",
+      "platform": "Flipkart",
+      "rating": "4.3",
+      "imageUrl": "",
+      "description": "A solid option from Flipkart.",
+      "pros": ["Good value"],
+      "cons": ["Limited colors"],
+      "brand": "Brand Name"
     }
   ]
 }
@@ -146,7 +161,7 @@ export default async function handler(req, res) {
                     provider_used: "direct-scrape-fallback"
                 };
                 
-                if (cacheKey) cacheService.set(cacheKey, fallbackOutput, 3600000);
+                if (cacheKey) cacheService.set(cacheKey, fallbackOutput, 14400000); // 4 hour TTL
                 return res.status(200).json(fallbackOutput);
             } else {
                 // Even scraping failed — return a friendly message with search links
@@ -185,7 +200,7 @@ export default async function handler(req, res) {
             }
         }
 
-        // Step 4: Parse AI response
+        // Step 4: Parse AI response (with truncation repair)
         let finalOutput;
         try {
             const cleanJson = aiResult.response.replace(/```json|```/g, '').trim();
@@ -201,18 +216,48 @@ export default async function handler(req, res) {
             finalOutput.provider_used = aiResult.provider;
 
         } catch (parseError) {
-            console.error("[Parse] AI returned invalid JSON:", aiResult.response?.substring(0, 200));
-            finalOutput = {
-                message: aiResult.response,
-                products: [],
-                provider_used: aiResult.provider,
-                warning: "AI response was not JSON"
-            };
+            // AUTO-REPAIR: Try to salvage truncated JSON (AI hit token limit)
+            console.warn("[Parse] Attempting truncated JSON repair...");
+            try {
+                let rawText = aiResult.response.replace(/```json|```/g, '').trim();
+                
+                // Strategy: Find the last complete product object and close the JSON
+                const lastCompleteProduct = rawText.lastIndexOf('},');
+                const lastSingleProduct = rawText.lastIndexOf('}');
+                
+                if (lastCompleteProduct > 0) {
+                    // Cut at last complete product, close the arrays/objects
+                    rawText = rawText.substring(0, lastCompleteProduct + 1) + ']}';
+                    finalOutput = JSON.parse(rawText);
+                    console.log(`[Parse] ✅ Repaired! Salvaged ${finalOutput.products?.length || 0} products from truncated response`);
+                } else if (lastSingleProduct > 0 && rawText.includes('"products"')) {
+                    rawText = rawText.substring(0, lastSingleProduct + 1) + ']}';
+                    finalOutput = JSON.parse(rawText);
+                    console.log(`[Parse] ✅ Repaired (single product)!`);
+                } else {
+                    throw new Error('Cannot repair');
+                }
+
+                if (finalOutput.products && Array.isArray(finalOutput.products)) {
+                    finalOutput.products = await injectAffiliateLinks(finalOutput.products);
+                }
+                finalOutput.provider_used = aiResult.provider;
+                finalOutput.repaired = true;
+
+            } catch (repairError) {
+                console.error("[Parse] Repair also failed:", aiResult.response?.substring(0, 200));
+                finalOutput = {
+                    message: aiResult.response,
+                    products: [],
+                    provider_used: aiResult.provider,
+                    warning: "AI response was not JSON"
+                };
+            }
         }
 
         // Cache successful response
         if (cacheKey) {
-            cacheService.set(cacheKey, finalOutput, 3600000); // 1 hour TTL
+            cacheService.set(cacheKey, finalOutput, 14400000); // 4 hour TTL — saves Pollinations API calls
         }
 
         return res.status(200).json(finalOutput);
