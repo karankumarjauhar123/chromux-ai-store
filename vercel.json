@@ -8,13 +8,13 @@
       "maxDuration": 25
     },
     "api/trending.js": {
-      "maxDuration": 20
+      "maxDuration": 30
     },
     "api/check-price.js": {
-      "maxDuration": 20
+      "maxDuration": 30
     },
     "api/search.js": {
-      "maxDuration": 20
+      "maxDuration": 30
     }
   },
   "headers": [
