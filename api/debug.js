@@ -14,7 +14,7 @@ export default async function handler(req, res) {
                 'Accept': 'text/html',
                 'Accept-Language': 'en-IN,en;q=0.9'
             },
-            signal: AbortSignal.timeout(8000)
+            signal: AbortSignal.timeout(12000)
         });
         const flipHtml = await flipRes.text();
         timings.flipkart = Date.now() - t1;
@@ -32,7 +32,7 @@ export default async function handler(req, res) {
                 'Accept': 'text/html',
                 'Accept-Language': 'en-IN,en;q=0.9'
             },
-            signal: AbortSignal.timeout(8000)
+            signal: AbortSignal.timeout(12000)
         });
         const amzHtml = await amzRes.text();
         timings.amazon = Date.now() - t2;
@@ -51,7 +51,7 @@ export default async function handler(req, res) {
                 'Content-Type': 'application/x-www-form-urlencoded'
             },
             body: 'q=' + encodeURIComponent('earbuds site:flipkart.com'),
-            signal: AbortSignal.timeout(8000)
+            signal: AbortSignal.timeout(12000)
         });
         const ddgHtml = await ddgRes.text();
         timings.ddg = Date.now() - t3;
@@ -70,7 +70,7 @@ export default async function handler(req, res) {
                 'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36'
             },
             body: JSON.stringify({ query: 'earbuds', page: 0, offset: 0 }),
-            signal: AbortSignal.timeout(8000)
+            signal: AbortSignal.timeout(12000)
         });
         timings.meesho = Date.now() - t4;
         if (meeshoRes.ok) {
