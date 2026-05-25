@@ -5,7 +5,7 @@
       "maxDuration": 30
     },
     "api/chat.js": {
-      "maxDuration": 25
+      "maxDuration": 55
     },
     "api/trending.js": {
       "maxDuration": 25

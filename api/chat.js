@@ -101,7 +101,16 @@ export default async function handler(req, res) {
         if (isShopping) {
             fetchedProducts = await fetchGoogleShopping(query);
             if (Array.isArray(fetchedProducts) && fetchedProducts.length > 0) {
-                contextText = `\n\n[Realtime Scraped Products found on Amazon/Flipkart/Myntra/Meesho]:\n${JSON.stringify(fetchedProducts)}`;
+                // Trim to top 15 products with compact fields — saves tokens for fast providers!
+                const compact = fetchedProducts.slice(0, 15).map(p => ({
+                    title: (p.title || '').substring(0, 80),
+                    price: p.price || '',
+                    platform: p.platform || '',
+                    rating: p.rating || '4.0',
+                    url: p.url || '',
+                    discount: p.discount || '',
+                }));
+                contextText = `\n\n[Top ${compact.length} Scraped Products from Amazon/Flipkart/Myntra/Meesho]:\n${JSON.stringify(compact)}`;
             }
         }
 
