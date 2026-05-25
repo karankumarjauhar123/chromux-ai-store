@@ -109,6 +109,7 @@ export default async function handler(req, res) {
                     rating: p.rating || '4.0',
                     url: p.url || '',
                     discount: p.discount || '',
+                    imageUrl: p.imageUrl || '',
                 }));
                 contextText = `\n\n[Top ${compact.length} Scraped Products from Amazon/Flipkart/Myntra/Meesho]:\n${JSON.stringify(compact)}`;
             }
